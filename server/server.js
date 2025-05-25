@@ -5,6 +5,9 @@ import { Server } from "socket.io";
 
 const app = express();
 
+// Middleware
+app.use(cors()); // You can configure specific origins for production
+
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
@@ -13,81 +16,84 @@ const io = new Server(server, {
   },
 });
 
-let clients = [];
+// Store connected clients
+let clients: {
+  id: string;
+  l1: number;
+  l2: number;
+  username: string;
+  profileUrl: string;
+}[] = [];
 
-// Handle incoming socket connections
+// Helper to broadcast all users to clients
+const broadcastAllUsers = () => {
+  io.emit("allUsers", clients);
+};
+
+// Handle socket events
 io.on("connection", (socket) => {
-  console.log("A user connected with socket id:", socket.id);
+  console.log("Client connected:", socket.id);
 
-  socket.emit('setCookie', {
-    name: 'userSession',
-    value: "server-01",   // Example value
+  // Send initial cookie
+  socket.emit("setCookie", {
+    name: "userSession",
+    value: "server-01",
     options: {
       httpOnly: true,
-      maxAge: 60 * 60 * 24 * 7,  // 7 days
-    }
+      maxAge: 60 * 60 * 24 * 7, // 7 days
+    },
   });
 
+  // Register or update a user
   socket.on("register", ({ l1, l2, username, profileUrl }) => {
-    const existingClientIndex = clients.findIndex(client => client.id === socket.id);
-  
-    if (existingClientIndex !== -1) {
-      // Replace the existing client with updated information
-      clients[existingClientIndex] = {
-        id: socket.id,
-        l1: l1,
-        l2: l2,
-        username: username,
-        profileUrl: profileUrl,
-      };
-      console.log(`Updated client: ${username} at ${l1}, ${l2}`);
+    const clientData = { id: socket.id, l1, l2, username, profileUrl };
+    const index = clients.findIndex(client => client.id === socket.id);
+
+    if (index !== -1) {
+      clients[index] = clientData;
+      console.log(`Updated client: ${username} at (${l1}, ${l2})`);
     } else {
-      // Add a new client
-      let newClient = {
-        id: socket.id,
-        l1: l1,
-        l2: l2,
-        username: username,
-        profileUrl: profileUrl,
-      };
-      console.log(`New client added while register: ${username} at ${l1}, ${l2}`);
-      clients.push(newClient);
+      clients.push(clientData);
+      console.log(`New client registered: ${username} at (${l1}, ${l2})`);
     }
-  
-    // Emit the updated list of clients to all connected clients
-    io.emit("allUsers", clients);
-  });
-  
 
+    broadcastAllUsers();
+  });
+
+  // Location response update
   socket.on("loc-res", ({ l1, l2 }) => {
-    const existing = clients.find((co) => co.id === socket.id);
-
-    if (existing) {
-      existing.l1 = l1;
-      existing.l2 = l2;
+    const client = clients.find(c => c.id === socket.id);
+    if (client) {
+      client.l1 = l1;
+      client.l2 = l2;
+      broadcastAllUsers();
     }
-    io.emit("allUsers", clients); // Send updated locations and profile URLs to all clients
-  })
-
-  socket.on("chatMessage", (message) => {
-    const sender = clients.find((client) => client.id === socket.id);
-    if (sender) {
-      const chatData = {
-        username: sender.username,
-        message: message,
-        profileUrl: sender.profileUrl,
-        timestamp: new Date(),
-      };
-      socket.broadcast.emit("newChatMessage", chatData); // Broadcast message to everyone except the sender
-      console.log(`Message from ${sender.username}: ${message}`);
-    }
-    else console.log("Message received from an unregistered");
   });
 
+  // Chat message handling
+  socket.on("chatMessage", (message: string) => {
+    const sender = clients.find(c => c.id === socket.id);
+    if (!sender) {
+      console.log("Unregistered user sent a message");
+      return;
+    }
+
+    const chatData = {
+      username: sender.username,
+      message,
+      profileUrl: sender.profileUrl,
+      timestamp: new Date(),
+    };
+
+    socket.broadcast.emit("newChatMessage", chatData);
+    console.log(`Message from ${sender.username}: ${message}`);
+  });
+
+  // Handle disconnection
   socket.on("disconnect", () => {
-    console.log("User disconnected");
-    clients = clients.filter((client) => client.id !== socket.id); // Remove disconnected client
-    io.emit("allUsers", clients); // Update all clients with the current locations
+    console.log("Client disconnected:", socket.id);
+    clients = clients.filter(c => c.id !== socket.id);
+    broadcastAllUsers();
   });
 });
 
